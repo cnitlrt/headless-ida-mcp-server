@@ -9,7 +9,19 @@ dependencies = [
     "dotenv>=0.9.9",
     "fastmcp>=0.4.1",
     "headless-ida>=0.6.1",
+    "langchain-mcp-adapters>=0.0.3",
+    "langchain-openai>=0.3.11",
+    "langgraph>=0.3.21",
+    "langgraph-cli[inmem]>=0.1.80",
     "mcp[cli]>=1.6.0",
+    "pytest>=8.3.5",
+    "pytest-asyncio>=0.26.0",
 ]
 [project.scripts]
 headless_ida_mcp_server = "headless_ida_mcp_server.server:main"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = [
+    "asyncio: mark test as async",
+]
