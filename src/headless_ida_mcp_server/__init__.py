@@ -1,0 +1,3 @@
+"""
+headless-ida-mcp-server
+"""

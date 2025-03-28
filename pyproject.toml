@@ -1,0 +1,15 @@
+[project]
+name = "headless-ida-mcp-server"
+version = "0.1.0"
+description = "headless-ida-mcp"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "argparse>=1.4.0",
+    "dotenv>=0.9.9",
+    "fastmcp>=0.4.1",
+    "headless-ida>=0.6.1",
+    "mcp[cli]>=1.6.0",
+]
+[project.scripts]
+headless_ida_mcp_server = "headless_ida_mcp_server.server:main"
