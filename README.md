@@ -1,6 +1,7 @@
 # Acknowledgments
 
 This project builds upon the work of:
+
 - Tools code adapted from [ida-pro-mcp](https://github.com/mrexodia/ida-pro-mcp) by mrexodia
 - Utilizes the [headless-ida](https://github.com/DennyDai/headless-ida) library by DennyDai
 
@@ -14,7 +15,7 @@ This project uses IDA Pro's headless mode to analyze binary files and provides a
 
 ## Prerequisites
 
-- Python 3.10 or higher
+- Python 3.12 or higher
 - IDA Pro with headless support (idat) https://github.com/DennyDai/headless-ida
 
 ## Installation
@@ -25,22 +26,22 @@ This project uses IDA Pro's headless mode to analyze binary files and provides a
    git clone https://github.com/cnitlrt/headless-ida-mcp-server.git 
    cd headless-ida-mcp-server
    ```
-
 2. Install dependencies:
 
    ```bash
-   uv venv 
+   uv python install 3.12
+   uv venv --python 3.12
    source .venv/bin/activate
-   uv pip install .
+   uv pip install -e .
    ```
 
 ## Configuration
 
 1. Copy the example environment file:
+
    ```bash
    cp .env_example .env
    ```
-
 2. Configure the following environment variables in `.env`:
 
    - `IDA_PATH`: Path to IDA Pro's headless executable (idat), e.g., `/home/ubuntu/idapro/idat`
@@ -48,19 +49,13 @@ This project uses IDA Pro's headless mode to analyze binary files and provides a
    - `PORT`: Port number for the MCP server, e.g., `8888`
    - `HOST`: Host address for the MCP server, e.g., `127.0.0.1`
    - `TRANSPORT`: MCP transport mode (`sse` or `stdio`)
+   - `OPENAI_API_KEY`: OPENAI_API_KEY
 
 ## Usage
 
 1. Start the server:
+
    ```bash
-   uv run headless_ida_mcp_server
+   uv run langgraph dev --port 2044
    ```
-
-2. Connect to the server using an MCP client:
-   ```bash
-   npx -y @modelcontextprotocol/inspector
-   ```
-![](./images/pic.png)
-
-
-![](./images/pic2.png)
+![](images/pic3.png)

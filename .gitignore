@@ -12,3 +12,4 @@ wheels/
 .python-version
 .cursor/
 .env
+.langgraph_api/

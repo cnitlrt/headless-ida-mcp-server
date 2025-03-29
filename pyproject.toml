@@ -3,7 +3,7 @@ name = "headless-ida-mcp-server"
 version = "0.1.0"
 description = "headless-ida-mcp"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "argparse>=1.4.0",
     "dotenv>=0.9.9",
@@ -12,8 +12,8 @@ dependencies = [
     "langchain-mcp-adapters>=0.0.3",
     "langchain-openai>=0.3.11",
     "langgraph>=0.3.21",
-    "langgraph-cli[inmem]>=0.1.80",
-    "mcp[cli]>=1.6.0",
+    "langgraph-cli[inmem]>=0.1.81",
+    "mcp>=1.6.0",
     "pytest>=8.3.5",
     "pytest-asyncio>=0.26.0",
 ]

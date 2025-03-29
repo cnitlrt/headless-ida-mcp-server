@@ -1,0 +1,7 @@
+{
+    "dependencies": ["."],
+    "graphs": {
+      "headless_ida_graph": "./src/headless_ida_graph/graph.py:graph"
+    },
+    "env": ".env"
+  }
