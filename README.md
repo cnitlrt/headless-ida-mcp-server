@@ -6,7 +6,7 @@ This project builds upon the work of:
 
 # Headless IDA MCP Server
 
-Headless IDA MCP Server is a headless server project based on IDA Pro, designed to provide remote analysis and management capabilities through the Multi-Client Protocol (MCP).
+If you want to run the server directly as a cli app, rather than an IDA plugin interactively,you can chose it.
 
 ## Project Description
 
@@ -44,7 +44,6 @@ This project uses IDA Pro's headless mode to analyze binary files and provides a
 2. Configure the following environment variables in `.env`:
 
    - `IDA_PATH`: Path to IDA Pro's headless executable (idat), e.g., `/home/ubuntu/idapro/idat`
-   - `BINARY_PATH`: Path to the binary file for analysis, e.g., `./test/main`
    - `PORT`: Port number for the MCP server, e.g., `8888`
    - `HOST`: Host address for the MCP server, e.g., `127.0.0.1`
    - `TRANSPORT`: MCP transport mode (`sse` or `stdio`)
@@ -57,10 +56,22 @@ This project uses IDA Pro's headless mode to analyze binary files and provides a
    ```
 
 2. Connect to the server using an MCP client:
+
+   Debug it: 
    ```bash
    npx -y @modelcontextprotocol/inspector
    ```
+   or
+   ```json
+   {
+   "mcpServers": {
+      "ida": {
+         "command": "/path/to/uv",
+         "args": ["--directory","path/to/headless-ida-mcp-server","run","headless_ida_mcp_server"]
+      }
+   }
+   }
+   ```
 ![](./images/pic.png)
-
 
 ![](./images/pic2.png)
