@@ -165,14 +165,14 @@ def exploit_prompt():
     messages = [
         base.UserMessage("You are a helpful assistant that can help me with my exploit."),
         base.UserMessage("""
-        你需要遵循以下方式来完成漏洞利用:
-        1. 逆向分析二进制文件,获取漏洞位置,分析漏洞类型
-            - 获取漏洞位置: 通过IDA Pro的分析功能,获取漏洞位置
-            - 需要先进行二进制文件的信息收集,例如使用checksec工具查看二进制文件的保护机制
-                - 如果发现保护没有开nx保护,你可以使用ret2shellcode的方法来获取shell.
-        2. 根据漏洞类型,选择合适的漏洞利用方式
-            - 如果是栈溢出漏洞,需要分析栈溢出的pattern,然后查看二进制文件中有没有后门函数,如果有后门函数则将返回地址修改为后门函数的地址
-            - 如果没有后门函数,需要使用ret2libc的方法来做,你不能默认二进制文件中存在你想要的gadget,你需要使用ROPgadget来获取gadget,然后结合gadget来完成pop链的构造.
+        You need to follow these steps to complete the exploit:
+        1. Reverse analyze the binary file to locate vulnerabilities and analyze vulnerability types
+            - Locate vulnerabilities: Use IDA Pro's analysis features to find vulnerability locations
+            - Need to first gather binary file information, such as using checksec tool to check binary protection mechanisms
+                - If you find NX protection is disabled, you can use ret2shellcode method to get a shell
+        2. Choose appropriate exploitation method based on vulnerability type
+            - For stack overflow vulnerabilities, analyze the overflow pattern and check if there are backdoor functions in the binary. If there are backdoor functions, modify the return address to point to the backdoor function address
+            - If there are no backdoor functions, need to use ret2libc method. Don't assume the binary contains the gadgets you want - you need to use ROPgadget to find gadgets and combine them to construct the pop chain.
         """),
     ]
     return messages

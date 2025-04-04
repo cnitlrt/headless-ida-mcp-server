@@ -14,7 +14,7 @@ This project uses IDA Pro's headless mode to analyze binary files and provides a
 
 ## Prerequisites
 
-- Python 3.10 or higher
+- Python 3.12 or higher
 - IDA Pro with headless support (idat) https://github.com/DennyDai/headless-ida
 
 ## Installation
@@ -29,9 +29,9 @@ This project uses IDA Pro's headless mode to analyze binary files and provides a
 2. Install dependencies:
 
    ```bash
-   uv venv 
-   source .venv/bin/activate
-   uv pip install .
+   uv python install 3.12
+   uv venv --python 3.12
+   uv pip install -e .
    ```
 
 ## Configuration
