@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/cnitlrt-headless-ida-mcp-server-badge.png)](https://mseep.ai/app/cnitlrt-headless-ida-mcp-server)
+
 # Acknowledgments
 
 This project builds upon the work of:
