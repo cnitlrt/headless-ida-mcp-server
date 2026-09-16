@@ -13,3 +13,10 @@ wheels/
 .cursor/
 .env
 exploit.py
+# Local test / lint artifacts (never ignore uv.lock)
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.venv-dev/

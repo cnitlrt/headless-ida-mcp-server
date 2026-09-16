@@ -1,16 +1,50 @@
 [project]
 name = "headless-ida-mcp-server"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.2.0"
+description = "Session-isolated headless IDA analysis over MCP"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "dotenv>=0.9.9",
-    "fastmcp>=0.4.1",
-    "headless-ida>=0.6.1",
-    "mcp>=1.6.0",
-    "pytest>=8.3.5",
-    "pytest-asyncio>=0.26.0",
+    "mcp>=1.26,<2",
+    "pydantic>=2.11,<3",
+    "python-dotenv>=1.0,<2",
+    "rpyc>=6.0.1,<7",
+    "typing-extensions>=4.12,<5",
 ]
+
+[project.optional-dependencies]
+# Retained for the user's separate local experiments; not loaded by the IDA server.
+gdb = ["libtmux>=0.46.1", "pwntools>=4.14.1", "ptpython>=3.0.29"]
+agent-demo = ["langchain-mcp-adapters>=0.1", "langchain-openai>=0.3", "langgraph>=0.3"]
+
+[dependency-groups]
+dev = ["pytest>=8.3,<10", "pytest-asyncio>=0.26,<2", "ruff>=0.11,<1", "pytest-cov>=6,<8"]
+
 [project.scripts]
 headless_ida_mcp_server = "headless_ida_mcp_server.server:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["headless_ida_mcp_server*"]
+
+[tool.setuptools]
+license-files = ["licenses/*.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = ["integration: requires a real IDA installation and opt-in"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+include = ["src/headless_ida_mcp_server/**/*.py", "tests/**/*.py"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
