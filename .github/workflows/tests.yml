@@ -1,0 +1,18 @@
+name: tests
+on: [push, pull_request]
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: uv sync --locked --group dev
+      - run: uv run ruff check src/headless_ida_mcp_server tests
+      - run: uv run ruff format --check src/headless_ida_mcp_server tests
+      - run: uv run pytest --cov=headless_ida_mcp_server --cov-report=term-missing
+      - run: uv build

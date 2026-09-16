@@ -1,342 +1,361 @@
-"""
-Helper module for IDA Python integration.
-Provides configuration and IDA interface initialization.
+"""Analysis operations executed INSIDE IDA, returning only JSON-compatible values.
+
+Selected API compatibility and decompiler handling adapted from ida-pro-mcp,
+MIT; see docs/UPSTREAM.md. No GUI state or global import monkey-patches.
 """
 
-from headless_ida import HeadlessIda
+from __future__ import annotations
+
+import importlib
 import logging
-from headless_ida_mcp_server import IDA_PATH
-import struct
-from typing import Optional, TypedDict, Annotated
+from itertools import islice
+from types import SimpleNamespace
 
-class Function(TypedDict):
-    start_address: int
-    end_address: int
-    name: str
-    prototype: Optional[str]
+from . import compat
+from .compat import IDAError
+from .models import (
+    EntryPoint,
+    Function,
+    Import,
+    Metadata,
+    OperationResult,
+    Page,
+    Segment,
+    String,
+    TextLine,
+    Xref,
+)
 
-class IDAError(Exception):
-    def __init__(self, message: str):
-        super().__init__(message)
+logger = logging.getLogger(__name__)
 
-    @property
-    def message(self) -> str:
-        return self.args[0]
 
-class Xref(TypedDict):
-    address: int
-    type: str
-    function: Optional[Function]
+def page(items, offset=0, limit=100):
+    if not 0 <= offset <= 10_000_000 or not 1 <= limit <= 1000:
+        raise IDAError("offset must be 0..10000000 and limit 1..1000")
+    rows = list(islice(items, offset, offset + limit + 1))
+    return {
+        "data": rows[:limit],
+        "offset": offset,
+        "next_offset": offset + limit if len(rows) > limit else None,
+    }
 
-class ConvertedNumber(TypedDict):
-    decimal: str
-    hexadecimal: str
-    bytes: str
-    ascii: Optional[str]
-    binary: str
 
-class IDA():
-    def __init__(self, binary_path: Annotated[str, "Path to the binary file"]):
-        self.headlessida = HeadlessIda(IDA_PATH,binary_path)
-        self.idaapi = self.headlessida.import_module("idaapi")
-        self.idautils = self.headlessida.import_module("idautils")
-        self.ida_entry = self.headlessida.import_module("ida_entry")
-        self.ida_funcs = self.headlessida.import_module("ida_funcs")
-        self.ida_hexrays = self.headlessida.import_module("ida_hexrays")
-        self.ida_kernwin = self.headlessida.import_module("ida_kernwin")
-        self.ida_lines = self.headlessida.import_module("ida_lines")
-        self.ida_nalt = self.headlessida.import_module("ida_nalt")
-        self.ida_name = self.headlessida.import_module("ida_name")
-        self.ida_typeinf = self.headlessida.import_module("ida_typeinf")
-        self.ida_xref = self.headlessida.import_module("ida_xref")
-        self.idc = self.headlessida.import_module("idc")
-        self.ida_loader = self.headlessida.import_module("ida_loader")
-    ######## COPY from https://github.com/mrexodia/ida-pro-mcp ########
-    def get_image_size(self):
-        try:
-            # https://www.hex-rays.com/products/ida/support/sdkdoc/structidainfo.html
-            info = self.idaapi.get_inf_structure()
-            omin_ea = info.omin_ea
-            omax_ea = info.omax_ea
-        except AttributeError:
-            import ida_ida
-            omin_ea = ida_ida.inf_get_omin_ea()
-            omax_ea = ida_ida.inf_get_omax_ea()
-        # Bad heuristic for image size (bad if the relocations are the last section)
-        image_size = omax_ea - omin_ea
-        # Try to extract it from the PE header
-        header = self.idautils.peutils_t().header()
-        if header and header[:4] == b"PE\0\0":
-            image_size = struct.unpack("<I", header[0x50:0x54])[0]
-        return image_size
+class IDA:
+    """One instance per database, owned by the IDA process's main thread."""
 
-    def get_prototype(self,fn) -> Optional[str]:
-        try:
-            if isinstance(fn, self.ida_funcs.func_t):
-                func = fn
-            else:
-                func = self.idaapi.get_func(fn)
-            if func is None:
-                return None
-            tif = self.ida_typeinf.tinfo_t()
-            if self.ida_nalt.get_tinfo(tif, func.start_ea):
-                return str(tif)
-            return self.idc.get_type(func.start_ea)
-        except Exception as e:
-            print(f"Error getting function prototype: {e}")
-            return None
-    
-    def get_function(self,address: int, *, raise_error=True) -> Optional[Function]:
-        fn = self.idaapi.get_func(address)
+    def __init__(self, modules=None):
+        if modules is None:
+            modules = SimpleNamespace()
+            for name in (
+                "idaapi",
+                "idautils",
+                "ida_entry",
+                "ida_funcs",
+                "ida_lines",
+                "ida_nalt",
+                "ida_name",
+                "ida_typeinf",
+                "idc",
+                "ida_loader",
+                "ida_segment",
+                "ida_bytes",
+            ):
+                setattr(modules, name, importlib.import_module(name))
+            for name in ("ida_hexrays", "ida_ida"):
+                try:
+                    setattr(modules, name, importlib.import_module(name))
+                except ImportError:
+                    setattr(modules, name, None)
+        self.m = modules
+
+    def _address(self, address):
+        if (
+            isinstance(address, bool)
+            or not isinstance(address, int)
+            or not 0 <= address < self.m.idaapi.BADADDR
+        ):
+            raise IDAError("Invalid address")
+        return address
+
+    def _function(self, address):
+        fn = self.m.ida_funcs.get_func(self._address(address))
         if fn is None:
-            if raise_error:
-                raise IDAError(f"No function found at address {address}")
-            return None
+            raise IDAError(f"No function at {address:#x}")
+        return fn
 
-        try:
-            name = fn.get_name()
-        except AttributeError:
-            name = self.ida_funcs.get_func_name(fn.start_ea)
+    def _row(self, fn, include_prototype=True):
+        result = None
+        if include_prototype:
+            try:
+                result = compat.prototype(self.m, fn)
+            except Exception:
+                logger.debug("Could not read function prototype", exc_info=True)
         return {
-            "address": fn.start_ea,
-            "end_address": fn.end_ea,
-            "name": name,
-            "prototype": self.get_prototype(fn),
+            "address": int(fn.start_ea),
+            "end_address": int(fn.end_ea),
+            "name": compat.function_name(self.m, fn),
+            "prototype": result,
         }
 
-    def get_function_by_name(self,name: Annotated[str, "Name of the function to get"]) -> Function:
-        """Get a function by its name"""
-        function_address = self.idaapi.get_name_ea(self.idaapi.BADADDR, name)
-        if function_address == self.idaapi.BADADDR:
-            raise IDAError(f"No function found with name {name}")
-        return self.get_function(function_address)
+    def get_function(self, address: int) -> Function:
+        return self._row(self._function(address))
 
-    def get_function_by_address(self,address: Annotated[int, "Address of the function to get"]) -> Function:
-        """Get a function by its address"""
+    def get_function_by_name(self, name: str) -> Function:
+        address = self.m.ida_name.get_name_ea(self.m.idaapi.BADADDR, name)
+        if address == self.m.idaapi.BADADDR:
+            raise IDAError(f"No function named {name}")
         return self.get_function(address)
-    
-    def get_current_address(self) -> int:
-        """Get the address currently selected by the user"""
-        return self.idaapi.get_screen_ea()
 
-    def get_current_function(self) -> Optional[Function]:
-        """Get the function currently selected by the user"""
-        return self.get_function(self.idaapi.get_screen_ea())
-    
-    def convert_number(self,text: Annotated[str, "Textual representation of the number to convert"],size: Annotated[Optional[int], "Size of the variable in bytes"]) -> ConvertedNumber:
-        """Convert a number (decimal, hexadecimal) to different representations"""
-        try:
-            value = int(text, 0)
-        except ValueError:
-            raise IDAError(f"Invalid number: {text}")
+    def list_functions(
+        self, offset=0, limit=100, query="", include_prototype=False
+    ) -> Page[Function]:
+        def rows():
+            for address in self.m.idautils.Functions():
+                fn = self.m.ida_funcs.get_func(address)
+                if fn is not None:
+                    row = self._row(fn, False)
+                    if query.casefold() in row["name"].casefold():
+                        yield row
 
-        # Estimate the size of the number
-        if not size:
-            size = 0
-            n = abs(value)
-            while n:
-                size += 1
-                n >>= 1
-            size += 7
-            size //= 8
-
-        # Convert the number to bytes
-        try:
-            bytes = value.to_bytes(size, "little", signed=True)
-        except OverflowError:
-            raise IDAError(f"Number {text} is too big for {size} bytes")
-
-        # Convert the bytes to ASCII
-        ascii = ""
-        for byte in bytes.rstrip(b"\x00"):
-            if byte >= 32 and byte <= 126:
-                ascii += chr(byte)
-            else:
-                ascii = None
-                break
-
-        return {
-            "decimal": str(value),
-            "hexadecimal": hex(value),
-            "bytes": bytes.hex(" "),
-            "ascii": ascii,
-            "binary": bin(value)
-        }
-
-    def list_functions(self) -> list[Function]:
-        """List all functions in the database"""
-        return [self.get_function(address) for address in self.idautils.Functions()]
-    
-    def decompile_checked(self,address: int):
-        if not self.ida_hexrays.init_hexrays_plugin():
-            raise IDAError("Hex-Rays decompiler is not available")
-        error = self.ida_hexrays.hexrays_failure_t()
-        cfunc: self.ida_hexrays.cfunc_t = self.ida_hexrays.decompile_func(address, error, self.ida_hexrays.DECOMP_WARNINGS)
-        if not cfunc:
-            message = f"Decompilation failed at {address}"
-            if error.str:
-                message += f": {error.str}"
-            if error.errea != self.idaapi.BADADDR:
-                message += f" (address: {error.errea})"
-            raise IDAError(message)
-        return cfunc
-
-    def decompile_function(self,address: Annotated[int, "Address of the function to decompile"]) -> str:
-        """Decompile a function at the given address"""
-        cfunc = self.decompile_checked(address)
-        sv = cfunc.get_pseudocode()
-        pseudocode = ""
-        for i, sl in enumerate(sv):
-            sl: self.ida_kernwin.simpleline_t
-            item = self.ida_hexrays.ctree_item_t()
-            addr = None if i > 0 else cfunc.entry_ea
-            if cfunc.get_line_item(sl.line, 0, False, None, item, None):
-                ds = item.dstr().split(": ")
-                if len(ds) == 2:
-                    try:
-                        addr = int(ds[0], 16)
-                    except ValueError:
-                        pass
-            line = self.ida_lines.tag_remove(sl.line)
-            if len(pseudocode) > 0:
-                pseudocode += "\n"
-            if addr is None:
-                pseudocode += f"/* line: {i} */ {line}"
-            else:
-                pseudocode += f"/* line: {i}, address: {addr} */ {line}"
-
-        return pseudocode
-
-    def disassemble_function(self,address: Annotated[int, "Address of the function to disassemble"]) -> str:
-        """Get assembly code (address: instruction; comment) for a function"""
-        func = self.idaapi.get_func(address)
-        if not func:
-            raise IDAError(f"No function found at address {address}")
-
-        # TODO: add labels
-        disassembly = ""
-        for address in self.ida_funcs.func_item_iterator_t(func):
-            if len(disassembly) > 0:
-                disassembly += "\n"
-            disassembly += f"{address}: "
-            disassembly += self.idaapi.generate_disasm_line(address, self.idaapi.GENDSM_REMOVE_TAGS)
-            comment = self.idaapi.get_cmt(address, False)
-            if not comment:
-                comment = self.idaapi.get_cmt(address, True)
-            if comment:
-                disassembly += f"; {comment}"
-        return disassembly
-
-    def get_xrefs_to(self,address: Annotated[int, "Address to get cross references to"]) -> list[Xref]:
-        """Get all cross references to the given address"""
-        xrefs = []
-        xref: self.ida_xref.xrefblk_t
-        for xref in self.idautils.XrefsTo(address):
-            xrefs.append({
-                "address": xref.frm,
-                "type": "code" if xref.iscode else "data",
-                "function": self.get_function(xref.frm, raise_error=False),
-            })
-        return xrefs
-
-    def get_entry_points(self) -> list[Function]:
-        """Get all entry points in the database"""
-        result = []
-        for i in range(self.ida_entry.get_entry_qty()):
-            ordinal = self.ida_entry.get_entry_ordinal(i)
-            address = self.ida_entry.get_entry(ordinal)
-            func = self.get_function(address, raise_error=False)
-            if func is not None:
-                result.append(func)
+        result = page(rows(), offset, limit)
+        # Expensive type information is loaded only for returned rows, not skipped rows.
+        if include_prototype:
+            result["data"] = [self.get_function(row["address"]) for row in result["data"]]
         return result
 
-    def set_decompiler_comment(self,address: Annotated[int, "Address in the function to set the comment for"],comment: Annotated[str, "Comment text (not shown in the disassembly)"]):
-        """Set a comment for a given address in the function pseudocode"""
+    def get_metadata(self) -> Metadata:
+        low, high, processor, bits = compat.database_info(self.m)
+        hx = self.m.ida_hexrays
+        return {
+            "ida_version": self.m.idaapi.get_kernel_version(),
+            "processor": processor,
+            "bits": bits,
+            "image_base": int(self.m.ida_nalt.get_imagebase()),
+            "min_address": int(low),
+            "max_address": int(high),
+            "function_count": self.m.ida_funcs.get_func_qty(),
+            "decompiler_available": bool(hx and hx.init_hexrays_plugin()),
+        }
 
-        # Reference: https://cyber.wtf/2019/03/22/using-ida-python-to-analyze-trickbot/
-        # Check if the address corresponds to a line
-        cfunc = self.decompile_checked(address)
+    def list_segments(self, offset=0, limit=100) -> Page[Segment]:
+        def rows():
+            for ea in self.m.idautils.Segments():
+                seg = self.m.ida_segment.getseg(ea)
+                if seg is not None:
+                    yield {
+                        "address": int(seg.start_ea),
+                        "end_address": int(seg.end_ea),
+                        "name": self.m.ida_segment.get_segm_name(seg),
+                        "permissions": int(seg.perm),
+                    }
 
-        # Special case for function entry comments
+        return page(rows(), offset, limit)
+
+    def list_strings(self, offset=0, limit=100, query="") -> Page[String]:
+        def rows():
+            for item in self.m.idautils.Strings():
+                text = str(item)
+                if query.casefold() in text.casefold():
+                    yield {
+                        "address": int(item.ea),
+                        "length": int(item.length),
+                        "text": text[:4096],
+                        "truncated": len(text) > 4096,
+                    }
+
+        return page(rows(), offset, limit)
+
+    def list_imports(self, offset=0, limit=100, query="") -> Page[Import]:
+        # IDA enumerates imports through callbacks, so stop after one lookahead row.
+        if not 0 <= offset <= 10_000_000 or not 1 <= limit <= 1000:
+            raise IDAError("Invalid pagination")
+        rows = []
+        matched = 0
+        for index in range(self.m.ida_nalt.get_import_module_qty()):
+            module = self.m.ida_nalt.get_import_module_name(index) or ""
+
+            def collect(ea, name, ordinal):
+                nonlocal matched
+                name = name or f"ordinal_{ordinal}"
+                if query.casefold() in name.casefold():
+                    if matched >= offset:
+                        rows.append(
+                            {
+                                "address": int(ea),
+                                "name": name,
+                                "module": module,
+                                "ordinal": int(ordinal),
+                            }
+                        )
+                    matched += 1
+                return len(rows) <= limit
+
+            self.m.ida_nalt.enum_import_names(index, collect)
+            if len(rows) > limit:
+                break
+        return {
+            "data": rows[:limit],
+            "offset": offset,
+            "next_offset": offset + limit if len(rows) > limit else None,
+        }
+
+    def get_entry_points(self, offset=0, limit=100) -> Page[EntryPoint]:
+        def rows():
+            entry = self.m.ida_entry
+            for i in range(entry.get_entry_qty()):
+                ordinal = entry.get_entry_ordinal(i)
+                ea = entry.get_entry(ordinal)
+                fn = self.m.ida_funcs.get_func(ea)
+                yield {
+                    "address": int(ea),
+                    "ordinal": int(ordinal),
+                    "name": entry.get_entry_name(ordinal) or "",
+                    "function": self._row(fn, False) if fn is not None else None,
+                }
+
+        return page(rows(), offset, limit)
+
+    def _xrefs(self, address, direction, offset, limit):
+        self._address(address)
+        source = self.m.idautils.XrefsTo if direction == "to" else self.m.idautils.XrefsFrom
+
+        def rows():
+            for ref in source(address, 0):
+                ea = ref.frm if direction == "to" else ref.to
+                fn = self.m.ida_funcs.get_func(ea)
+                yield {
+                    "address": int(ea),
+                    "type": "code" if ref.iscode else "data",
+                    "function": self._row(fn, False) if fn is not None else None,
+                }
+
+        return page(rows(), offset, limit)
+
+    def get_xrefs_to(self, address: int, offset=0, limit=100) -> Page[Xref]:
+        return self._xrefs(address, "to", offset, limit)
+
+    def get_xrefs_from(self, address: int, offset=0, limit=100) -> Page[Xref]:
+        return self._xrefs(address, "from", offset, limit)
+
+    def decompile_function(self, address: int, offset=0, limit=100) -> Page[TextLine]:
+        cfunc = compat.decompile(self.m, self._address(address))
+        hx = self.m.ida_hexrays
+
+        def rows():
+            for index, sl in enumerate(cfunc.get_pseudocode()):
+                ea = int(cfunc.entry_ea) if index == 0 else None
+                head, item, tail = (hx.ctree_item_t() for _ in range(3))
+                if cfunc.get_line_item(sl.line, 0, False, head, item, tail):
+                    # Same conservative fallback as upstream: not every line maps to an address.
+                    description = item.dstr() or ""
+                    parts = description.split(": ", 1)
+                    if len(parts) == 2:
+                        try:
+                            ea = int(parts[0], 16)
+                        except ValueError:
+                            pass
+                text = self.m.ida_lines.tag_remove(sl.line)
+                yield {
+                    "line": index,
+                    "address": ea,
+                    "text": text[:16384],
+                    "truncated": len(text) > 16384,
+                }
+
+        return page(rows(), offset, limit)
+
+    def disassemble_function(self, address: int, offset=0, limit=100) -> Page[TextLine]:
+        fn = self._function(address)
+
+        def rows():
+            for index, ea in enumerate(self.m.idautils.FuncItems(fn.start_ea)):
+                text = self.m.idc.generate_disasm_line(ea, 0) or ""
+                text = self.m.ida_lines.tag_remove(text)
+                comment = self.m.ida_bytes.get_cmt(ea, False) or self.m.ida_bytes.get_cmt(ea, True)
+                if comment:
+                    text += f" ; {comment}"
+                yield {
+                    "line": index,
+                    "address": int(ea),
+                    "text": text[:16384],
+                    "truncated": len(text) > 16384,
+                }
+
+        return page(rows(), offset, limit)
+
+    def _dirty(self, address):
+        hx = self.m.ida_hexrays
+        if hx and hx.init_hexrays_plugin():
+            hx.mark_cfunc_dirty(address, False)
+
+    def refresh_decompiler_ctext(self, function_address: int) -> OperationResult:
+        self._dirty(self._function(function_address).start_ea)
+        return {"success": True, "message": "Decompiler cache invalidated"}
+
+    def rename_function(self, function_address: int, new_name: str) -> OperationResult:
+        fn = self._function(function_address)
+        if not self.m.ida_name.set_name(fn.start_ea, new_name, self.m.ida_name.SN_CHECK):
+            raise IDAError("Rename failed; check for an invalid or duplicate name")
+        self._dirty(fn.start_ea)
+        return {"success": True, "message": "Function renamed"}
+
+    def rename_local_variable(
+        self, function_address: int, old_name: str, new_name: str
+    ) -> OperationResult:
+        fn = self._function(function_address)
+        compat.decompile(self.m, fn.start_ea)
+        if not self.m.ida_hexrays.rename_lvar(fn.start_ea, old_name, new_name):
+            raise IDAError("Local variable rename failed")
+        self._dirty(fn.start_ea)
+        return {"success": True, "message": "Local variable renamed"}
+
+    def set_disassembly_comment(self, address: int, comment: str) -> OperationResult:
+        self._address(address)
+        if not self.m.ida_bytes.set_cmt(address, comment, False):
+            raise IDAError("Failed to set disassembly comment")
+        fn = self.m.ida_funcs.get_func(address)
+        if fn is not None:
+            self._dirty(fn.start_ea)
+        return {"success": True, "message": "Disassembly comment set"}
+
+    def set_decompiler_comment(self, address: int, comment: str) -> OperationResult:
+        cfunc = compat.decompile(self.m, self._address(address))
         if address == cfunc.entry_ea:
-            self.idc.set_func_cmt(address, comment, True)
+            if not self.m.idc.set_func_cmt(address, comment, True):
+                raise IDAError("Failed to set function comment")
             cfunc.refresh_func_ctext()
-            return
-
+            return {"success": True, "message": "Function comment set"}
         eamap = cfunc.get_eamap()
-        if address not in eamap:
-            raise IDAError(f"Failed to set comment at {address}")
-        nearest_ea = eamap[address][0].ea
-
-        # Remove existing orphan comments
+        if address not in eamap or not eamap[address]:
+            raise IDAError("No pseudocode statement maps to this address")
+        hx = self.m.ida_hexrays
+        location = hx.treeloc_t()
+        location.ea = eamap[address][0].ea
+        # Never delete all orphan comments: they may contain unrelated user annotations.
+        location.itp = hx.ITP_SEMI
+        old = cfunc.get_user_cmt(location, hx.RETRIEVE_ALWAYS)
+        cfunc.set_user_cmt(location, comment)
+        cfunc.refresh_func_ctext()
         if cfunc.has_orphan_cmts():
-            cfunc.del_orphan_cmts()
-            cfunc.save_user_cmts()
-
-        # Set the comment by trying all possible item types
-        tl = self.idaapi.treeloc_t()
-        tl.ea = nearest_ea
-        for itp in range(self.idaapi.ITP_SEMI, self.idaapi.ITP_COLON):
-            tl.itp = itp
-            cfunc.set_user_cmt(tl, comment)
-            cfunc.save_user_cmts()
+            cfunc.set_user_cmt(location, old or "")
             cfunc.refresh_func_ctext()
-            if not cfunc.has_orphan_cmts():
-                return
-            cfunc.del_orphan_cmts()
-            cfunc.save_user_cmts()
-        raise IDAError(f"Failed to set comment at {address}")
-    
+            raise IDAError("Comment location is ambiguous; previous comment preserved")
+        cfunc.save_user_cmts()
+        return {"success": True, "message": "Decompiler comment set"}
 
-    def set_disassembly_comment(self,address: Annotated[int, "Address in the function to set the comment for"],comment: Annotated[str, "Comment text (not shown in the pseudocode)"]):
-        """Set a comment for a given address in the function disassembly"""
-        if not self.idaapi.set_cmt(address, comment, False):
-            raise IDAError(f"Failed to set comment at {address}")
+    def set_function_prototype(self, function_address: int, prototype: str) -> OperationResult:
+        fn = self._function(function_address)
+        ti = self.m.ida_typeinf
+        tif = ti.tinfo_t()
+        if not ti.parse_decl(tif, None, prototype, ti.PT_SIL) or not tif.is_func():
+            raise IDAError("Declaration is not a valid function prototype")
+        # PT_SIL is a parse flag, not an apply_tinfo flag.
+        if not ti.apply_tinfo(fn.start_ea, tif, ti.TINFO_DEFINITE):
+            raise IDAError("Failed to apply function prototype")
+        self._dirty(fn.start_ea)
+        return {"success": True, "message": "Function prototype updated"}
 
-    def refresh_decompiler_widget(self):
-        widget = self.ida_kernwin.get_current_widget()
-        if widget is not None:
-            vu = self.ida_hexrays.get_widget_vdui(widget)
-            if vu is not None:
-                vu.refresh_ctext()
-
-    def refresh_decompiler_ctext(self,function_address: int):
-        error = self.ida_hexrays.hexrays_failure_t()
-        cfunc: self.ida_hexrays.cfunc_t = self.ida_hexrays.decompile_func(function_address, error, self.ida_hexrays.DECOMP_WARNINGS)
-        if cfunc:
-            cfunc.refresh_func_ctext()
-            
-    def rename_local_variable(self,function_address: Annotated[int, "Address of the function containing the variable"],old_name: Annotated[str, "Current name of the variable"],new_name: Annotated[str, "New name for the variable"]):
-        """Rename a local variable in a function"""
-        func = self.idaapi.get_func(function_address)
-        if not func:
-            raise IDAError(f"No function found at address {function_address}")
-        if not self.ida_hexrays.rename_lvar(func.start_ea, old_name, new_name):
-            raise IDAError(f"Failed to rename local variable {old_name} in function {func.start_ea}")
-        self.refresh_decompiler_ctext(func.start_ea)
-
-    def rename_function(self,function_address: Annotated[int, "Address of the function to rename"],new_name: Annotated[str, "New name for the function"]):
-        """Rename a function"""
-        fn = self.idaapi.get_func(function_address)
-        if not fn:
-            raise IDAError(f"No function found at address {function_address}")
-        if not self.idaapi.set_name(fn.start_ea, new_name):
-            raise IDAError(f"Failed to rename function {fn.start_ea} to {new_name}")
-        self.refresh_decompiler_ctext(fn.start_ea)
-    
-    def set_function_prototype(self,function_address: Annotated[int, "Address of the function"],prototype: Annotated[str, "New function prototype"]) -> str:
-        """Set a function's prototype"""
-        fn = self.idaapi.get_func(function_address)
-        if not fn:
-            raise IDAError(f"No function found at address {function_address}")
-        try:
-            tif = self.ida_typeinf.tinfo_t(prototype, None, self.ida_typeinf.PT_SIL)
-            if not tif.is_func():
-                raise IDAError(f"Parsed declaration is not a function type")
-            if not self.ida_typeinf.apply_tinfo(fn.start_ea, tif, self.ida_typeinf.PT_SIL):
-                raise IDAError(f"Failed to apply type")
-            self.refresh_decompiler_ctext(fn.start_ea)
-        except Exception as e:
-            raise IDAError(f"Failed to parse prototype string: {prototype}")
-    def save_idb_file(self,save_path: Annotated[str, "Path to save the IDB file"]):
-        self.ida_loader.save_database(save_path, 0)
+    def save_idb_file(self, save_path: str) -> OperationResult:
+        if not self.m.ida_loader.save_database(save_path, 0):
+            raise IDAError("IDA failed to save the database")
+        return {"success": True, "message": "Database saved"}
